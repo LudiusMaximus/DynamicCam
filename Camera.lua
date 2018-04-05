@@ -239,6 +239,11 @@ function Camera:CameraZoom(direction, increments, automated)
 
 		zoom.time = GetTime() + timeToZoom;
 		incTimer = self:ScheduleTimer(CameraZoomFinished, timeToZoom, not automated);
+    
+    
+    -- Adjust the shoulder offset based on zoom level.
+    SetCVar("test_cameraOverShoulder", parent.currentShoulderOffset * parent:GetShoulderOffsetZoomFactor(zoom.set))
+    
 	end
 
 	parent:DebugPrint(automated and "Automated" or "Manual", "Zoom", direction, "increments:", increments, "diff:", difference, "new zoom level:", zoom.set, "time:", timeToZoom);

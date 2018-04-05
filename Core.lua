@@ -45,6 +45,198 @@ DynamicCam = AceAddon:NewAddon("DynamicCam", "AceConsole-3.0", "AceEvent-3.0", "
 DynamicCam.currentSituationID = nil;
 
 
+
+
+-- This is needed for adjusting the shoulder offset depending on zoom level.
+-- We do not want to determine the mount every time etc...
+DynamicCam.currentShoulderOffset = 1;
+
+
+
+
+-- This is needed to (almost) perfect the timing of changing the shoulder offset when shapeshifting.
+-- http://wowwiki.wikia.com/wiki/Wait
+
+local waitTable = {};
+local waitFrame = nil;
+
+function DynamicCam_wait(delay, func, ...)
+  if(type(delay)~="number" or type(func)~="function") then
+    return false;
+  end
+  if(waitFrame == nil) then
+    waitFrame = CreateFrame("Frame","WaitFrame", UIParent);
+    waitFrame:SetScript("onUpdate",function (self,elapse)
+      local count = #waitTable;
+      local i = 1;
+      while(i<=count) do
+        local waitRecord = tremove(waitTable,i);
+        local d = tremove(waitRecord,1);
+        local f = tremove(waitRecord,1);
+        local p = tremove(waitRecord,1);
+        if(d>elapse) then
+          tinsert(waitTable,i,{d-elapse,f,p});
+          i = i + 1;
+        else
+          count = count - 1;
+          f(unpack(p));
+        end
+      end
+    end);
+  end
+  tinsert(waitTable,{delay,func,{...}});
+  return true;
+end
+
+
+
+function DynamicCam:getCurrentMount() 
+
+  for k,v in pairs (C_MountJournal.GetMountIDs()) do 
+
+    creatureName, spellID, icon, active, isUsable, sourceType, isFavorite, isFactionSpecific, faction, hideOnChar, isCollected, mountID = C_MountJournal.GetMountInfoByID(v)    
+    
+    if (active) then
+      return creatureName
+    end
+  end
+
+  return nil
+  
+end
+
+
+
+
+
+
+
+
+
+
+
+
+function DynamicCam:CorrectShoulderOffset(offset) 
+
+  -- print ("CorrectShoulderOffset")
+
+  local factor = 1
+    
+    
+  if (IsMounted()) then
+  
+    if (not UnitOnTaxi("player")) then
+      local currentMount = self:getCurrentMount()
+    
+
+      -- print ("You are mounted on " .. currentMount .. "!")
+
+      
+      if (currentMount == "Black War Kodo") 
+      or (currentMount == "Brown Kodo") 
+      or (currentMount == "Gray Kodo") 
+      or (currentMount == "Great Brown Kodo") 
+      or (currentMount == "Great Gray Kodo") 
+      or (currentMount == "Great White Kodo") 
+      or (currentMount == "White Kodo") then
+        factor = 4.2
+      elseif (currentMount == "Albino Drake") then
+        factor = 2.5
+      else
+        -- Default for all other mounts...
+        factor = 6
+      end
+
+    else 
+      -- print ("You are on a taxi!")
+      -- Works all right for Wind Riders.
+      factor = 2.5
+    end
+  
+    -- No idea why this is necessary!
+    if (offset < 0) then
+      factor = factor / 10
+    end
+  
+  elseif (GetShapeshiftForm(true) ~= 0) then
+    -- https://wow.gamepedia.com/API_GetShapeshiftForm
+    -- Each shapeshift form needs a slightly different factor.
+    local localizedClass, englishClass, classIndex = UnitClass("player");
+    -- print ("you are a shape shifted " .. englishClass .. "...")
+          
+    if (englishClass == "DRUID") then
+      local formID = GetShapeshiftForm(true)
+      
+      if (formID == 1) then
+        -- print ("... in Bear form.")
+        factor = 0.825
+      elseif (formID == 2) then
+        -- print ("... in Cat form.")
+        factor = 0.86
+      elseif (formID == 3) then
+        if (IsSwimming()) then 
+          -- print ("... in Aquatic form.")
+          factor = 0.71
+        elseif (IsFlying()) then 
+          -- print ("... in Flight form.")
+          -- TODO Factor
+        else
+          -- print ("... in Travel form.")
+          factor = 0.89
+        end
+      elseif (formID == 4) then
+        -- print ("... in the first known of: Moonkin Form, Treant Form, Stag Form (in order).")
+        -- TODO Factor
+      elseif (formID == 5) then
+        -- print ("... in the second known of: Moonkin Form, Treant Form, Stag Form (in order).")
+        -- TODO Factor
+      elseif (formID == 6) then
+        -- print ("... in the third known of: Moonkin Form, Treant Form, Stag Form (in order).")
+        -- TODO Factor
+      end
+    elseif (englishClass == "SHAMAN") then
+       -- print ("... in Ghostwolf form.")
+       factor = 0.775
+    end
+  else
+    -- print ("you are normal!")
+    
+    -- TODO Get factors for all races and genders...
+    
+  end
+  
+
+  -- print ("Correcting " .. offset .. " by " .. factor .. " to: " .. offset * factor )
+  
+  -- Store this value for quick access of the zoom function.
+  self.currentShoulderOffset = offset * factor
+  
+  return self.currentShoulderOffset
+  
+end
+
+
+
+
+function DynamicCam:GetShoulderOffsetZoomFactor(zoomLevel) 
+
+  -- print ("GetShoulderOffsetZoomFactor")
+
+  -- If we zoom between startDecrease and finishDecrease, we want to decrease the shoulder offset gradually.
+  -- TODO: Those constants should be user configurable.
+  local startDecrease = 8
+  local finishDecrease = 2
+  
+  if (zoomLevel < finishDecrease) then
+    return 0
+  elseif (zoomLevel < startDecrease) then
+    return (zoomLevel-finishDecrease) / (startDecrease-finishDecrease)
+  else
+    return 1
+  end
+
+end
+
 ------------
 -- LOCALS --
 ------------
@@ -102,6 +294,13 @@ local function DC_SetCVar(cvar, setting)
 
     DynamicCam:DebugPrint(cvar, setting);
 
+    -- This is necessary to get the fix situation dependent.
+    if (cvar == "test_cameraOverShoulder") then
+      -- Must be called separately because CorrectShoulderOffset remembers the value for quick access for the zoom function.
+      setting = DynamicCam:CorrectShoulderOffset(setting)
+      setting = DynamicCam:GetShoulderOffsetZoomFactor(GetCameraZoom()) * setting
+    end
+    
     SetCVar(cvar, setting);
 end
 
@@ -255,7 +454,13 @@ function DynamicCam:OnInitialize()
     if (not self.db.profile.enabled) then
         self:Disable();
     end
+     
 end
+
+
+
+
+
 
 function DynamicCam:OnEnable()
     self.db.profile.enabled = true;
@@ -324,6 +529,7 @@ end
 local delayTimer;
 
 function DynamicCam:EvaluateSituations()
+
     -- if we currently have timer running, kill it
     if (evaluateTimer) then
         self:CancelTimer(evaluateTimer);
@@ -434,6 +640,8 @@ function DynamicCam:EnterSituation(situationID, oldSituationID, skipZoom)
     -- set view settings
     if (situation.view.enabled) then
         if (situation.view.restoreView) then
+            -- According to https://wow.gamepedia.com/API_SaveView 1 is reserved for first person...
+            -- But apparently storing the current view works...
             SaveView(1);
         end
 
@@ -829,7 +1037,7 @@ return false;]];
     newSituation.enabled = false;
     newSituation.priority = 20;
     newSituation.delay = .5;
-    newSituation.executeOnInit = "this.frames = {\"GarrisonCapacitiveDisplayFrame\", \"BankFrame\", \"MerchantFrame\", \"GossipFrame\", \"ClassTrainerFrame\", \"QuestFrame\",}";
+    newSituation.executeOnInit = "this.frames = {\"GarrisonCapacitiveDisplayFrame\", \"BankFrame\", \"MerchantFrame\", \"GossipFrame\", \"ClassTrainerFrame\", \"QuestFrame\", \"ImmersionFrame\",}";
     newSituation.condition = [[local shown = false;
 for k,v in pairs(this.frames) do
     if (_G[v] and _G[v]:IsShown()) then
@@ -1026,6 +1234,7 @@ function DynamicCam:ShouldRestoreZoom(oldSituationID, newSituationID)
 end
 
 
+
 ------------
 -- EVENTS --
 ------------
@@ -1034,6 +1243,7 @@ local TIME_BEFORE_NEXT_EVALUATE = .1;
 local EVENT_DOUBLE_TIME = .2;
 
 function DynamicCam:EventHandler(event, possibleUnit, ...)
+  
     -- we don't want to evaluate too often, some of the events can be *very* spammy
     if (not lastEvaluate or (lastEvaluate and ((lastEvaluate + TIME_BEFORE_NEXT_EVALUATE) < GetTime()))) then
         lastEvaluate = GetTime();
@@ -1051,7 +1261,77 @@ function DynamicCam:EventHandler(event, possibleUnit, ...)
     end
 end
 
+
+
+
+
+function DynamicCam:PerformShoulderOffsetCorrection(event)
+  
+  -- This is necessary to always get the fix.
+  -- print ("Got event: " .. event)
+  
+  local userSetShoulderOffset = self.db.profile.defaultCvars["test_cameraOverShoulder"]
+  local shoulderOffsetZoomFactor = self:GetShoulderOffsetZoomFactor(GetCameraZoom())
+  
+  
+  if (event == "UPDATE_SHAPESHIFT_FORM") then
+    if (GetShapeshiftForm(true) ~= 0) then
+      -- print ("You are turning into shapeshift!")
+      -- Perfect for shaman -> wolf
+      return DynamicCam_wait(0.025, SetCVar, "test_cameraOverShoulder", shoulderOffsetZoomFactor * self:CorrectShoulderOffset(userSetShoulderOffset))
+    else
+      -- print ("You are turning into normal!")
+      -- (Mostly) perfect for wolf -> shaman
+      return DynamicCam_wait(0.145, SetCVar, "test_cameraOverShoulder", shoulderOffsetZoomFactor * self:CorrectShoulderOffset(userSetShoulderOffset))
+    end
+  -- Would have liked to fix the "dismount wobble". But to no avail so far.
+  -- elseif (event == "PLAYER_MOUNT_DISPLAY_CHANGED") then
+    -- if (IsMounted() == false) then
+      -- -- print ("you are dismounting!")
+      -- return DynamicCam_wait(0.0, SetCVar, "test_cameraOverShoulder", shoulderOffsetZoomFactor * self:CorrectShoulderOffset(userSetShoulderOffset))
+    -- else
+      -- -- print ("you are mounting!")
+      -- return SetCVar("test_cameraOverShoulder", shoulderOffsetZoomFactor * self:CorrectShoulderOffset(userSetShoulderOffset))
+    -- end
+  else 
+    return SetCVar("test_cameraOverShoulder", shoulderOffsetZoomFactor * self:CorrectShoulderOffset(userSetShoulderOffset))
+  end
+  
+end  
+
+
+
+
+
 function DynamicCam:RegisterEvents()
+
+    
+    -- This works all right for shapeshifting if we add the custom wait times before
+    -- changing the shoulder offset.
+    events["UPDATE_SHAPESHIFT_FORM"] = true;
+    self:RegisterEvent("UPDATE_SHAPESHIFT_FORM", "PerformShoulderOffsetCorrection");
+    
+
+    
+    
+    -- TODO: Tried to get the switch from mounted to unmounted faster, but to no avail so far.
+    events["PLAYER_MOUNT_DISPLAY_CHANGED"] = true;
+    self:RegisterEvent("PLAYER_MOUNT_DISPLAY_CHANGED", "PerformShoulderOffsetCorrection");
+
+    
+    
+    -- Needed because when mounted while teleporting into dungeon, where you get automatically dismounted.
+    events["PLAYER_ENTERING_WORLD"] = true;
+    self:RegisterEvent("PLAYER_ENTERING_WORLD", "PerformShoulderOffsetCorrection");
+    
+    
+    -- Needed for taxi.
+    events["PLAYER_MOUNT_DISPLAY_CHANGED"] = true;
+    self:RegisterEvent("PLAYER_MOUNT_DISPLAY_CHANGED", "PerformShoulderOffsetCorrection");
+    
+    
+    
+    
     events["NAME_PLATE_UNIT_ADDED"] = true;
     self:RegisterEvent("NAME_PLATE_UNIT_ADDED", "EventHandler");
 
@@ -1060,6 +1340,9 @@ function DynamicCam:RegisterEvents()
 
     events["PLAYER_TARGET_CHANGED"] = true;
     self:RegisterEvent("PLAYER_TARGET_CHANGED", "EventHandler");
+    
+    
+    
 
     for name, situation in pairs(self.db.profile.situations) do
         if (situation.events) then
@@ -1067,7 +1350,7 @@ function DynamicCam:RegisterEvents()
                 if (not events[event]) then
                     events[event] = true;
                     self:RegisterEvent(event, "EventHandler");
-                    -- self:DebugPrint("Registered for event:", event);
+                    -- print("Registered " .. situation.name .. " for event:", event);
                 end
             end
         end
